@@ -1,5 +1,3 @@
-# config.py
-
 ######################
 # PostgreSQL Settings
 ######################
@@ -15,8 +13,13 @@ MAXCONN = 10
 ######################
 # Data Settings
 ######################
-START_DATE = "2020-01-01"  # or any date that will yield data
-END_DATE = None            # or "2023-12-31", etc.
+# If you want ALL available data from ticker inception, set START_DATE = None
+# Otherwise, set something like "2020-01-01"
+START_DATE = "2020-01-01"
+# START_DATE = None  # Uncomment this if you want earliest possible date
+
+# If you leave END_DATE = None, yfinance fetches through the present day
+END_DATE = None
 DATA_FETCH_INTERVAL = "1d"
 
 ######################

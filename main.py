@@ -1,5 +1,3 @@
-# main.py
-
 import sys
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,7 +32,6 @@ def ensure_price_table_columns(conn):
         """
         cur.execute(create_table_sql)
 
-        # In case the table exists but lacks columns
         alter_sql = """
         ALTER TABLE price_data
         ADD COLUMN IF NOT EXISTS sma_50 NUMERIC,
@@ -83,15 +80,28 @@ def get_sp500_tickers() -> list:
 def fetch_data(ticker: str, start_date, end_date) -> pd.DataFrame:
     """
     Fetch OHLCV from Yahoo Finance for the given ticker and date range.
+    If start_date is None, fetch the max history available.
+    Otherwise, fetch data from start_date to end_date.
     """
     try:
-        df = yf.download(
-            tickers=ticker,
-            start=start_date,
-            end=end_date,
-            interval=config.DATA_FETCH_INTERVAL,
-            progress=False
-        )
+        # --- CHANGE BELOW: use period="max" if START_DATE is None ---
+        if start_date is None:
+            df = yf.download(
+                tickers=ticker,
+                period="max",
+                interval=config.DATA_FETCH_INTERVAL,
+                progress=False
+            )
+        else:
+            df = yf.download(
+                tickers=ticker,
+                start=start_date,
+                end=end_date,
+                interval=config.DATA_FETCH_INTERVAL,
+                progress=False
+            )
+        # --- END CHANGE ---
+
         if df.empty:
             logging.warning(f"No data returned for {ticker}.")
             return pd.DataFrame()
@@ -114,15 +124,13 @@ def fetch_data(ticker: str, start_date, end_date) -> pd.DataFrame:
         }
         df.rename(columns=rename_map, inplace=True)
 
-        # If there's no 'close', skip
         if "close" not in df.columns:
             logging.warning(f"'{ticker}' => no 'close' column. Possibly invalid ticker.")
             return pd.DataFrame()
 
         # Ensure DatetimeIndex
         df.index = pd.to_datetime(df.index, errors="coerce")
-        # Drop NaN index rows
-        df = df[~df.index.isna()]
+        df = df[~df.index.isna()]  # Drop NaN index rows
 
         return df
     except Exception as e:
@@ -140,7 +148,6 @@ def compute_sma(df: pd.DataFrame, sma_short: int, sma_long: int) -> pd.DataFrame
     df = df.copy()
     df.sort_index(inplace=True)
 
-    # Rolling means on the 'close' column
     df[f"sma_{sma_short}"] = df["close"].rolling(window=sma_short, min_periods=1).mean()
     df[f"sma_{sma_long}"] = df["close"].rolling(window=sma_long, min_periods=1).mean()
 
@@ -156,12 +163,9 @@ def write_to_db(conn, ticker, df: pd.DataFrame):
         return
 
     df = df.copy()
-
-    # Reset index -> 'Date' column
     df.reset_index(inplace=True)
     if df.columns[0] == "index":
         df.rename(columns={"index": "Date"}, inplace=True)
-    # If no 'Date' column, rename the first column forcibly
     if "Date" not in df.columns:
         df.rename(columns={df.columns[0]: "Date"}, inplace=True)
 
@@ -169,7 +173,6 @@ def write_to_db(conn, ticker, df: pd.DataFrame):
         logging.error(f"Ticker {ticker} => no 'Date' after reset. Skipping.")
         return
 
-    # Convert 'Date' to datetime, drop rows that are NaT
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df.dropna(subset=["Date"], inplace=True)
 
@@ -186,7 +189,6 @@ def write_to_db(conn, ticker, df: pd.DataFrame):
             low_val = float(row["low"]) if not pd.isna(row["low"]) else None
             close_val = float(row["close"]) if not pd.isna(row["close"]) else None
             volume_val = int(row["volume"]) if not pd.isna(row["volume"]) else None
-
             sma50_val = float(row["sma_50"]) if "sma_50" in row and not pd.isna(row["sma_50"]) else None
             sma200_val = float(row["sma_200"]) if "sma_200" in row and not pd.isna(row["sma_200"]) else None
 
@@ -223,6 +225,7 @@ def write_to_db(conn, ticker, df: pd.DataFrame):
     """
     with conn.cursor() as cur:
         psycopg2.extras.execute_values(cur, insert_sql, records, page_size=100)
+
     conn.commit()
     logging.info(f"Inserted/updated {len(records)} rows for {ticker}.")
 

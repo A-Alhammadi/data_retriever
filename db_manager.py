@@ -1,5 +1,3 @@
-# db_manager.py
-
 import logging
 import psycopg2
 import psycopg2.extras
