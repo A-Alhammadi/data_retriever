@@ -1,10 +1,12 @@
 # main.py
+
 import sys
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import yfinance as yf
 import psycopg2.extras
+
 import config
 from db_manager import DBConnectionManager, db_pool
 
@@ -54,7 +56,7 @@ def get_sp500_tickers() -> list:
     import requests
     from bs4 import BeautifulSoup
 
-    url = config.STOCK_LIST_URL  # moved from inline to config
+    url = config.STOCK_LIST_URL
     tickers = []
     try:
         resp = requests.get(url, timeout=10)
@@ -71,6 +73,7 @@ def get_sp500_tickers() -> list:
             cols = row.find_all("td")
             if cols:
                 ticker = cols[0].text.strip()
+                # Some tickers have '.' in them, yfinance expects '-', so we convert
                 ticker = ticker.replace(".", "-")
                 tickers.append(ticker)
     except Exception as e:
@@ -81,11 +84,12 @@ def get_sp500_tickers() -> list:
 def fetch_data(ticker: str, start_date, end_date) -> pd.DataFrame:
     """
     Fetch OHLCV from Yahoo Finance for the given ticker and date range.
-    If start_date is None, fetch the max history available.
+    If start_date is None, fetch the maximum history available.
     Otherwise, fetch data from start_date to end_date.
     """
     try:
         if start_date is None:
+            # No start_date => fetch maximum historical data
             df = yf.download(
                 tickers=ticker,
                 period="max",
@@ -129,7 +133,7 @@ def fetch_data(ticker: str, start_date, end_date) -> pd.DataFrame:
 
         # Ensure DatetimeIndex
         df.index = pd.to_datetime(df.index, errors="coerce")
-        df = df[~df.index.isna()]  # Drop NaN index rows
+        df = df[~df.index.isna()]  # Drop any rows with NaN index
 
         return df
     except Exception as e:
@@ -140,7 +144,7 @@ def fetch_data(ticker: str, start_date, end_date) -> pd.DataFrame:
 def get_sector_for_ticker(ticker: str) -> str:
     """
     Retrieve the sector for a ticker via yfinance. 
-    Returns "Unknown" if not found.
+    Returns "Unknown" if not found or on error.
     """
     try:
         info = yf.Ticker(ticker).info
@@ -155,7 +159,7 @@ def get_sector_for_ticker(ticker: str) -> str:
 
 def compute_sma(df: pd.DataFrame, sma_short: int, sma_long: int) -> pd.DataFrame:
     """
-    Compute and add SMA columns to the DataFrame.
+    Compute and add short- and long-term SMA columns to the DataFrame.
     """
     if df.empty:
         return df.copy()
@@ -171,7 +175,7 @@ def compute_sma(df: pd.DataFrame, sma_short: int, sma_long: int) -> pd.DataFrame
 
 def write_to_db(conn, ticker, df: pd.DataFrame, sector_val: str):
     """
-    Insert or update daily records for a single ticker into price_data table,
+    Insert or update daily records for a single ticker into the price_data table,
     including the sector field.
     """
     if df.empty:
@@ -207,7 +211,10 @@ def write_to_db(conn, ticker, df: pd.DataFrame, sector_val: str):
             sma50_val = float(row["sma_50"]) if "sma_50" in row and not pd.isna(row["sma_50"]) else None
             sma200_val = float(row["sma_200"]) if "sma_200" in row and not pd.isna(row["sma_200"]) else None
 
-            # The same sector for all rows for this ticker
+            # Use the same sector for all rows for this ticker
+            if not sector_val:
+                sector_val = "Unknown"
+
             records.append((
                 ticker,
                 trade_date,
@@ -232,14 +239,14 @@ def write_to_db(conn, ticker, df: pd.DataFrame, sector_val: str):
         (ticker, trade_date, sector, open, high, low, close, volume, sma_50, sma_200)
     VALUES %s
     ON CONFLICT (ticker, trade_date) DO UPDATE
-        SET sector = EXCLUDED.sector,
-            open = EXCLUDED.open,
-            high = EXCLUDED.high,
-            low = EXCLUDED.low,
-            close = EXCLUDED.close,
-            volume = EXCLUDED.volume,
-            sma_50 = EXCLUDED.sma_50,
-            sma_200 = EXCLUDED.sma_200
+        SET sector   = EXCLUDED.sector,
+            open     = EXCLUDED.open,
+            high     = EXCLUDED.high,
+            low      = EXCLUDED.low,
+            close    = EXCLUDED.close,
+            volume   = EXCLUDED.volume,
+            sma_50   = EXCLUDED.sma_50,
+            sma_200  = EXCLUDED.sma_200
     """
     with conn.cursor() as cur:
         psycopg2.extras.execute_values(cur, insert_sql, records, page_size=100)
@@ -260,7 +267,7 @@ def main():
         # Ensure price_data table and columns
         ensure_price_table_columns(conn)
 
-        # Resolve tickers: either from Wikipedia S&P 500 list or from config
+        # Choose tickers: from Wikipedia or config
         if config.USE_SP500_WIKIPEDIA:
             tickers = get_sp500_tickers()
         else:
@@ -287,7 +294,7 @@ def main():
                     return
 
                 # 3) Retrieve sector from Yahoo Finance
-                sector_val = get_sector_for_ticker(tkr)
+                sector_val = get_sector_for_ticker(tkr)  # "Unknown" if not found
 
                 # 4) Insert/Update into DB
                 with DBConnectionManager() as local_conn:
