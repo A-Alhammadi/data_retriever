@@ -33,6 +33,23 @@ USE_SP500_WIKIPEDIA = True
 # config.py
 STOCK_LIST_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
+
+######################
+# Sector/ETF Tickers
+######################
+SECTOR_ETFS = [
+    "SPY",  # S&P 500
+    "XLE",  # Energy
+    "XLF",  # Financials
+    "XLI",  # Industrials
+    "XLK",  # Technology
+    "XLB",  # Materials
+    "XLP",  # Consumer Staples
+    "XLY",  # Consumer Discretionary
+    "XLU",  # Utilities
+    "XLV",  # Healthcare
+    "XLRE"  # Real Estate
+]
 ######################
 # SMA Calculation
 ######################
