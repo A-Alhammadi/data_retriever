@@ -30,6 +30,8 @@ USE_SP500_WIKIPEDIA = True
 
 # OPTION B: define your own ticker list
 # TICKERS = ["AAPL", "MSFT"]
+# config.py
+STOCK_LIST_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
 ######################
 # SMA Calculation
