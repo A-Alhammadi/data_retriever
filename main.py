@@ -1,5 +1,3 @@
-# main.py
-
 import sys
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -48,9 +46,6 @@ def ensure_price_table_columns(conn):
         conn.commit()
     logging.info("Ensured price_data table, including 'sector', 'sma_50', and 'sma_200' columns.")
 
-###############################
-# NEW FUNCTION FOR SECTOR_DATA
-###############################
 def ensure_sector_table_columns(conn):
     """
     Ensure the table sector_data exists with columns for open, high, low, close, volume, 
@@ -86,6 +81,22 @@ def ensure_sector_table_columns(conn):
         conn.commit()
     logging.info("Ensured sector_data table with columns for SMA and price fields.")
 
+def drop_unused_columns(conn):
+    """
+    Drop any unused columns (if they exist) from price_data or sector_data.
+    Example: dropping an 'adj_close' column if it exists.
+    """
+    columns_to_drop = ["adj_close"]  # Add or remove columns as needed
+    with conn.cursor() as cur:
+        for col in columns_to_drop:
+            try:
+                cur.execute(f"ALTER TABLE price_data DROP COLUMN IF EXISTS {col};")
+                cur.execute(f"ALTER TABLE sector_data DROP COLUMN IF EXISTS {col};")
+            except Exception as e:
+                logging.warning(f"Could not drop column {col} from DB: {e}")
+    conn.commit()
+    logging.info("Dropped any unused columns if they existed.")
+
 def get_sp500_tickers() -> list:
     """
     Returns a list of S&P500 tickers from Wikipedia, using the URL from config.STOCK_LIST_URL.
@@ -119,18 +130,19 @@ def get_sp500_tickers() -> list:
 
 def fetch_data(ticker: str, start_date, end_date) -> pd.DataFrame:
     """
-    Fetch OHLCV from Yahoo Finance for the given ticker and date range.
-    If start_date is None, fetch the maximum history available.
-    Otherwise, fetch data from start_date to end_date.
+    Fetch OHLCV data from Yahoo Finance for the given ticker and date range.
+    Ensures we only return columns relevant to that ticker if multi-ticker data is returned.
     """
     try:
+        # 1) Download data
         if start_date is None:
             # No start_date => fetch maximum historical data
             df = yf.download(
                 tickers=ticker,
                 period="max",
                 interval=config.DATA_FETCH_INTERVAL,
-                progress=False
+                progress=False,
+                threads=False
             )
         else:
             df = yf.download(
@@ -138,38 +150,50 @@ def fetch_data(ticker: str, start_date, end_date) -> pd.DataFrame:
                 start=start_date,
                 end=end_date,
                 interval=config.DATA_FETCH_INTERVAL,
-                progress=False
+                progress=False,
+                threads=False
             )
+
+        # 2) Debug log: first rows + all columns
+        logging.info(f"\nRaw data for {ticker}:\n{df.head()}\nColumns: {df.columns.tolist()}")
 
         if df.empty:
             logging.warning(f"No data returned for {ticker}.")
             return pd.DataFrame()
 
-        # Flatten multi-index columns if needed
+        # 3) If it's a MultiIndex with multiple tickers (Close, AAPL), etc., extract only the current ticker.
         if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[0] for c in df.columns]
+            # Attempt to cross-section the current ticker
+            try:
+                df = df.xs(key=ticker, axis=1, level=1)
+            except KeyError:
+                # If the cross-section fails, the data for this ticker doesn't exist properly
+                logging.warning(f"Ticker {ticker}: could not isolate columns in multi-level DataFrame.")
+                return pd.DataFrame()
 
-        # Drop 'Adj Close' if present
+        # Now columns should be single-level, e.g. Close, Open, High, Low, Volume, Adj Close
+        # 4) Drop 'Adj Close' if present
         if "Adj Close" in df.columns:
             df.drop(columns=["Adj Close"], inplace=True, errors="ignore")
 
-        # Rename columns
+        # 5) Rename columns to standard
         rename_map = {
             "Open": "open",
             "High": "high",
-            "Low": "low",
+            "Low":  "low",
             "Close": "close",
             "Volume": "volume"
         }
         df.rename(columns=rename_map, inplace=True)
 
+        # 6) Validate that 'close' exists
         if "close" not in df.columns:
             logging.warning(f"'{ticker}' => no 'close' column. Possibly invalid ticker.")
             return pd.DataFrame()
 
-        # Ensure DatetimeIndex
+        # 7) Ensure index is Datetime
         df.index = pd.to_datetime(df.index, errors="coerce")
-        df = df[~df.index.isna()]  # Drop any rows with NaN index
+        df = df[~df.index.isna()]  # Drop rows with NaN index
 
         return df
     except Exception as e:
@@ -178,7 +202,7 @@ def fetch_data(ticker: str, start_date, end_date) -> pd.DataFrame:
 
 def get_sector_for_ticker(ticker: str) -> str:
     """
-    Retrieve the sector for a ticker via yfinance. 
+    Retrieve the sector for a ticker via yfinance.
     Returns "Unknown" if not found or on error.
     """
     try:
@@ -286,9 +310,6 @@ def write_to_db(conn, ticker, df: pd.DataFrame, sector_val: str):
     conn.commit()
     logging.info(f"Inserted/updated {len(records)} rows for {ticker}.")
 
-###############################
-# NEW FUNCTION TO WRITE SECTOR
-###############################
 def write_to_sector_db(conn, ticker, df: pd.DataFrame):
     """
     Insert or update daily records for an ETF ticker into the sector_data table.
@@ -362,24 +383,21 @@ def write_to_sector_db(conn, ticker, df: pd.DataFrame):
     conn.commit()
     logging.info(f"Inserted/updated {len(records)} sector rows for {ticker}.")
 
-###############################
-# NEW FUNCTION FOR PROCESSING ETFs
-###############################
 def process_sector_ticker(tkr):
+    """
+    Fetch data for an ETF, compute SMAs, and store in sector_data table.
+    """
     try:
-        # 1) Fetch daily OHLC data
         df_fetched = fetch_data(tkr, config.START_DATE, config.END_DATE)
         if df_fetched.empty:
             logging.warning(f"{tkr} => no ETF data, skipping.")
             return
 
-        # 2) Compute SMAs
         df_fetched = compute_sma(df_fetched, config.MA_SHORT, config.MA_LONG)
         if df_fetched.empty:
             logging.warning(f"{tkr} => empty after SMA for ETF, skipping.")
             return
 
-        # 3) Insert/Update into DB
         with DBConnectionManager() as local_conn:
             if local_conn:
                 write_to_sector_db(local_conn, tkr, df_fetched)
@@ -396,15 +414,14 @@ def main():
 
         db_pool.monitor_pool()
 
-        # Ensure price_data table and columns
+        # Ensure DB tables
         ensure_price_table_columns(conn)
-
-        ###################################
-        # ENSURE sector_data TABLE as well
-        ###################################
         ensure_sector_table_columns(conn)
 
-        # Choose tickers: from Wikipedia or config
+        # Drop any columns you no longer need
+        drop_unused_columns(conn)
+
+        # Choose tickers from Wikipedia or config
         if config.USE_SP500_WIKIPEDIA:
             tickers = get_sp500_tickers()
         else:
@@ -418,29 +435,25 @@ def main():
 
         def process_ticker(tkr):
             try:
-                # 1) Fetch daily OHLC data
                 df_fetched = fetch_data(tkr, config.START_DATE, config.END_DATE)
                 if df_fetched.empty:
                     logging.warning(f"{tkr} => no data, skipping.")
                     return
 
-                # 2) Compute SMAs
                 df_fetched = compute_sma(df_fetched, config.MA_SHORT, config.MA_LONG)
                 if df_fetched.empty:
                     logging.warning(f"{tkr} => empty after SMA, skipping.")
                     return
 
-                # 3) Retrieve sector from Yahoo Finance
                 sector_val = get_sector_for_ticker(tkr)  # "Unknown" if not found
 
-                # 4) Insert/Update into DB
                 with DBConnectionManager() as local_conn:
                     write_to_db(local_conn, tkr, df_fetched, sector_val)
 
             except Exception as e:
                 logging.error(f"Error processing {tkr}: {e}", exc_info=True)
 
-        # Process S&P 500 tickers
+        # Process S&P 500 (or custom) tickers
         max_workers = min(config.MAX_WORKERS, len(tickers))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(process_ticker, tkr) for tkr in tickers]
@@ -450,9 +463,7 @@ def main():
                 except Exception as e:
                     logging.error(f"Exception in thread: {e}", exc_info=True)
 
-        ###################################
-        # NOW PROCESS ETFs (INCLUDING SPY)
-        ###################################
+        # Process ETFs (including SPY)
         etf_tickers = config.SECTOR_ETFS
         logging.info(f"Processing {len(etf_tickers)} ETFs (including SPY).")
         max_workers_etfs = min(config.MAX_WORKERS, len(etf_tickers))

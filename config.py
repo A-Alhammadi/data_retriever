@@ -29,7 +29,7 @@ DATA_FETCH_INTERVAL = "1d"
 USE_SP500_WIKIPEDIA = True
 
 # OPTION B: define your own ticker list
-# TICKERS = ["AAPL", "MSFT"]
+#TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN"]
 # config.py
 STOCK_LIST_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
@@ -38,17 +38,18 @@ STOCK_LIST_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 # Sector/ETF Tickers
 ######################
 SECTOR_ETFS = [
-    "SPY",  # S&P 500
-    "XLE",  # Energy
-    "XLF",  # Financials
-    "XLI",  # Industrials
-    "XLK",  # Technology
-    "XLB",  # Materials
-    "XLP",  # Consumer Staples
-    "XLY",  # Consumer Discretionary
-    "XLU",  # Utilities
-    "XLV",  # Healthcare
-    "XLRE"  # Real Estate
+    "SPY",   # S&P 500
+    "XLB",   # Materials
+    "XLC",   # Communication Services
+    "XLE",   # Energy
+    "XLF",   # Financials
+    "XLI",   # Industrials
+    "XLK",   # Technology
+    "XLP",   # Consumer Staples
+    "XLU",   # Utilities
+    "XLV",   # Health Care
+    "XLY",   # Consumer Discretionary
+    "XLRE"   # Real Estate
 ]
 ######################
 # SMA Calculation
